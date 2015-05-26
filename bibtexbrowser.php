@@ -57,9 +57,8 @@ function bibtexbrowser_configure($key, $value) {
 @define('BIBLIOGRAPHYSECTIONS','DefaultBibliographySections');// this is the name of a function
 @define('BIBLIOGRAPHYTITLE','DefaultBibliographyTitle');// this is the name of a function
 
-// shall we try to render math in $…$ in HTML?
-// possible values: 'php', 'javascript', all others: off
-@define('BIBTEXBROWSER_RENDER_MATH', 'javascript');
+// shall we load MathJax to render math in $…$ in HTML?
+@define('BIBTEXBROWSER_RENDER_MATH', true);
 
 // can we load bibtex files on external servers?
 @define('BIBTEXBROWSER_LOCAL_BIB_ONLY', true);
@@ -883,8 +882,6 @@ function char2html_case_sensitive($line,$latexmodifier,$char,$entitiyfragment) {
 (I still look for a comprehensive translation table from late chars to html, better than [[http://isdc.unige.ch/Newsletter/help.html]])
  */
 function latex2html($line) {
-
-  if (BIBTEXBROWSER_RENDER_MATH != 'php') return $line;
 
   $maths = array();
   $index = 0;
@@ -3725,7 +3722,7 @@ if (method_exists($content, 'getTitle')) {
     javascript();
   }
 
-  if (BIBTEXBROWSER_RENDER_MATH == 'javascript') {
+  if (BIBTEXBROWSER_RENDER_MATH) {
     javascript_math();
   }
 ?>
