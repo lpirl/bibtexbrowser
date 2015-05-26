@@ -883,6 +883,13 @@ function char2html_case_sensitive($line,$latexmodifier,$char,$entitiyfragment) {
  */
 function latex2html($line) {
 
+  $line = preg_replace('/([^\\\\])~/','\\1&nbsp;', $line);
+
+  // performance increases with this test
+  // bug found by Serge Barral: what happens if we have curly braces only (typically to ensure case in Latex)
+  // added && strpos($line,'{')===false
+  if (strpos($line,'\\')===false && strpos($line,'{')===false) return $line;
+
   $maths = array();
   $index = 0;
   // first we escape the math env
@@ -892,13 +899,6 @@ function latex2html($line) {
     $line = str_replace($k, '__MATH'.$index.'__', $line);
     $index++;
   }
-
-  $line = preg_replace('/([^\\\\])~/','\\1&nbsp;', $line);
-
-  // performance increases with this test
-  // bug found by Serge Barral: what happens if we have curly braces only (typically to ensure case in Latex)
-  // added && strpos($line,'{')===false
-  if (strpos($line,'\\')===false && strpos($line,'{')===false) return $line;
 
   // we should better replace this before the others
   // in order not to mix with the HTML entities coming after (just in case)
