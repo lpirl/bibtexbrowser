@@ -59,6 +59,7 @@ function bibtexbrowser_configure($key, $value) {
 
 // shall we load MathJax to render math in $…$ in HTML?
 @define('BIBTEXBROWSER_RENDER_MATH', true);
+@define('MATHJAX_URI', '//cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS_HTML.js');
 
 // can we load bibtex files on external servers?
 @define('BIBTEXBROWSER_LOCAL_BIB_ONLY', true);
@@ -2331,7 +2332,7 @@ if (!function_exists('javascript_math')) {
         tex2jax: {inlineMath: [["$","$"]]}
       });
     </script>
-    <script src='//cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS_HTML.js'></script>
+    <script src="<?php echo MATHJAX_URI ?>"></script>
     <?php
   }
 }
