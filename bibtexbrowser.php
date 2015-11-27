@@ -23,12 +23,22 @@ define('BIBTEXBROWSER','v__GITHUB__');
 
 // support for configuration
 // set with bibtexbrowser_configure, get with config_value
-// you may have bibtexbrowser_configure('ENCODING', 'latin1') in bibtexbrowser.local.php
+// you may have bibtexbrowser_configure('foo', 'bar') in bibtexbrowser.local.php
 global $CONFIGURATION;
 $CONFIGURATION = array();
 function bibtexbrowser_configure($key, $value) {
   global $CONFIGURATION;
   $CONFIGURATION[$key]=$value;
+  if (!defined($key)) { define($key, $value); } // for backward compatibility
+}
+function bibtexbrowser_configuration($key) {
+  global $CONFIGURATION;
+  if (isset($CONFIGURATION[$key])) {return $CONFIGURATION[$key];}
+  if (defined($key)) {return constant($key);}
+  throw new Exception('no such configuration parameter: '.$key);
+}
+function c($key) { // shortcut
+  return bibtexbrowser_configuration($key);
 }
 
 // *************** CONFIGURATION
@@ -37,10 +47,16 @@ function bibtexbrowser_configure($key, $value) {
 // the changes that require existing bibtexbrowser symbols should be in bibtexbrowser.after.php (included at the end of this file)
 @include(preg_replace('/\.php$/','.local.php',__FILE__));
 
-// there is no encoding transformation from the bibtex file to the html file
-// if your bibtex file contains 8 bits characters in utf-8
-// change the following parameter
-@define('ENCODING','UTF-8');//@define('ENCODING','iso-8859-1');//define('ENCODING','windows-1252');
+// the encoding of your bibtex file
+@define('BIBTEX_INPUT_ENCODING','UTF-8');//@define('BIBTEX_INPUT_ENCODING','iso-8859-1');//define('BIBTEX_INPUT_ENCODING','windows-1252');
+// the encoding of the HTML output
+@define('OUTPUT_ENCODING','UTF-8');
+
+// print a warning if deprecated variable is used
+if (defined('ENCODING')) {
+  echo 'ENCODING has been replaced by BIBTEX_INPUT_ENCODING and OUTPUT_ENCODING';
+}
+
 // number of bib items per page
 // we use the same parameter 'num' as Google
 @define('PAGE_SIZE',isset($_GET['num'])?(preg_match('/^\d+$/',$_GET['num'])?$_GET['num']:10000):14);
@@ -126,15 +142,26 @@ function bibtexbrowser_configure($key, $value) {
 // for ordered_list, the index is given by HTML directly (in increasing order)
 @define('BIBTEXBROWSER_LAYOUT','table');
 
+// should the original bibtex be displayed or a reconstructed one with filtering
+// values: original/reconstructed
+// warning, with reconstructed, the latex markup for accents/diacritics is lost
+@define('BIBTEXBROWSER_BIBTEX_VIEW','original');
+// a list of fields that will not be shown in the bibtex view if BIBTEXBROWSER_BIBTEX_VIEW=reconstructed
+@define('BIBTEXBROWSER_BIBTEX_VIEW_FILTEREDOUT','comment|note|file');
+
+// should Latex macros be executed (e.g. \'e -> é
+@define('BIBTEXBROWSER_USE_LATEX2HTML',true);
+
 // Which is the first html <hN> level that should be used in embedded mode?
 @define('BIBTEXBROWSER_HTMLHEADINGLEVEL', 2);
 
-@define('BIBTEXBROWSER_ACADEMIC_TOC', true);
+@define('BIBTEXBROWSER_ACADEMIC_TOC', false);
 
 @define('BIBTEXBROWSER_DEBUG',false);
 
-@define('COMMA_NAMES',false);// do have authors in a comma separated form?
-@define('FORCE_NAMELIST_SEPARATOR', ''); // if non-empty, use this to separate multiple names regardless of COMMA_NAMES
+@define('USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT',false);// do have authors in a comma separated form?
+@define('USE_INITIALS_FOR_NAMES',false); // use only initials for all first names
+@define('FORCE_NAMELIST_SEPARATOR', ''); // if non-empty, use this to separate multiple names regardless of USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT
 @define('TYPES_SIZE',10); // number of entry types per table
 @define('YEAR_SIZE',20); // number of years per table
 @define('AUTHORS_SIZE',30); // number of authors per table
@@ -654,7 +681,7 @@ see snippet of [[#StateBasedBibParser]]
 class XMLPrettyPrinter {
   function beginFile() {
     header('Content-type: text/xml;');
-    print '<?xml version="1.0" encoding="'.ENCODING.'"?>';
+    print '<?xml version="1.0" encoding="'.OUTPUT_ENCODING.'"?>';
     print '<bibfile>';
   }
 
@@ -885,6 +912,8 @@ function char2html_case_sensitive($line,$latexmodifier,$char,$entitiyfragment) {
 function latex2html($line) {
 
   $line = preg_replace('/([^\\\\])~/','\\1&nbsp;', $line);
+  $line = str_replace('---','&mdash;',$line);
+  $line = str_replace('--','&ndash;',$line);
 
   // performance increases with this test
   // bug found by Serge Barral: what happens if we have curly braces only (typically to ensure case in Latex)
@@ -904,6 +933,9 @@ function latex2html($line) {
   // we should better replace this before the others
   // in order not to mix with the HTML entities coming after (just in case)
   $line = str_replace('\\&','&amp;', $line);
+
+  $line = str_replace('\_','_',$line);
+  $line = str_replace('\%','%',$line);
 
   // handling \url{....}
   // often used in howpublished for @misc
@@ -980,7 +1012,7 @@ function latex2html($line) {
 /** encodes strings for Z3988 URLs. Note that & are encoded as %26 and not as &amp. */
 function s3988($s) {
   // first remove the HTML entities (e.g. &eacute;) then urlencode them
-  return urlencode(html_entity_decode($s, ENT_NOQUOTES, ENCODING));
+  return urlencode($s);
 }
 
 /**
@@ -1084,8 +1116,23 @@ class BibEntry {
     // but instead could contain HTML code (with links using the character "~" for example)
     // so "comment" is not transformed too
     if ($name!='url' && $name!='comment') {
+     // 1. trim space
       $value = xtrim($value);
-      $value = latex2html($value);
+
+      if (c('BIBTEXBROWSER_USE_LATEX2HTML')) {
+        // 2. transform Latex markup to HTML entities (easier than a one to one mapping to each character)
+        // HTML entity is an intermediate format
+        $value = latex2html($value);
+
+        // 3. transform to the target output encoding
+        $value = html_entity_decode($value, ENT_QUOTES|ENT_XHTML, OUTPUT_ENCODING);
+      }
+
+      // 4. transform existing encoded character in the new format
+      if (function_exists('mb_convert_encoding') && OUTPUT_ENCODING != BIBTEX_INPUT_ENCODING) {
+        $vaue = mb_convert_encoding($value, OUTPUT_ENCODING, BIBTEX_INPUT_ENCODING);
+      }
+
     } else {
       //echo "xx".$value."xx\n";
     }
@@ -1272,12 +1319,15 @@ class BibEntry {
   }
 
   /**
-  * Returns the formated author name w.r.t to the user preference encoded in COMMA_NAMES
+  * Returns the formated author name w.r.t to the user preference encoded in USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT
   */
   function formatAuthor($author){
-    if (COMMA_NAMES) {
+    if (USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT) {
       return $this->formatAuthorCommaSeparated($author);
+    } else if (USE_INITIALS_FOR_NAMES) {
+      return $this->formatAuthorInitials($author);
     }
+
     else return $this->formatAuthorCanonical($author);
   }
 
@@ -1299,6 +1349,16 @@ class BibEntry {
       else return $lastname;
   }
 
+  /**
+  * Returns the formated author name as "LastName Initials".
+  * e.g. for Vancouver-style used by PubMed.
+  */
+  function formatAuthorInitials($author){
+      list($firstname, $lastname) = splitFullName($author);
+      if ($firstname!='') return $lastname.' '.preg_replace("/(\p{Lu})\w*[- ]*/Su","$1", $firstname);
+      else return $lastname;
+  }
+
 
   /** Returns the authors as an array of strings (one string per author) */
   function getFormattedAuthors() {
@@ -1314,7 +1374,7 @@ class BibEntry {
   */
   function formattedAuthors() {  return $this->getFormattedAuthorsImproved(); }
 
-  /** Adds to getFormattedAuthors() the home page links and returns a string (not an array). Is configured with BIBTEXBROWSER_AUTHOR_LINKS and COMMA_NAMES.
+  /** Adds to getFormattedAuthors() the home page links and returns a string (not an array). Is configured with BIBTEXBROWSER_AUTHOR_LINKS and USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT.
   */
   function getFormattedAuthorsImproved() {
     $array_authors = $this->getFormattedAuthors();
@@ -1331,7 +1391,7 @@ class BibEntry {
       }
     }
 
-    if (COMMA_NAMES) {$sep = '; ';} else {$sep = ', ';}
+    if (USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT) {$sep = '; ';} else {$sep = ', ';}
     if (FORCE_NAMELIST_SEPARATOR !== '') {$sep = FORCE_NAMELIST_SEPARATOR;}
 
     return implode($sep ,$array_authors);
@@ -1404,7 +1464,7 @@ class BibEntry {
     foreach ($this->getEditors() as $editor) {
       $editors[]=$this->addHomepageLink($this->formatAuthor($editor));
     }
-    if (COMMA_NAMES) {$sep = '; ';} else {$sep = ', ';}
+    if (USE_COMMA_AS_NAME_SEPARATOR_IN_OUTPUT) {$sep = '; ';} else {$sep = ', ';}
     if (FORCE_NAMELIST_SEPARATOR !== '') {$sep = FORCE_NAMELIST_SEPARATOR;}
     return implode($sep, $editors).', '.(count($editors)>1?'eds.':'ed.');
   }
@@ -1472,9 +1532,25 @@ class BibEntry {
     return $this;
   }
 
-  function getText() {
+
   /** Returns the verbatim text of this bib entry. */
-    return $this->text;
+  function getText() {
+    if (c('BIBTEXBROWSER_BIBTEX_VIEW') == 'original') {
+        return $this->text;
+    }
+    if (c('BIBTEXBROWSER_BIBTEX_VIEW') == 'reconstructed') {
+        $result = '@'.$this->getType().'{'.$this->getKey().",\n";
+        foreach ($this->fields as $k=>$v) {
+          if ( !preg_match('/^('.c('BIBTEXBROWSER_BIBTEX_VIEW_FILTEREDOUT').')$/i', $k)
+             && !preg_match('/^(key|'.Q_INNER_AUTHOR.'|'.Q_INNER_TYPE.')$/i', $k) )
+             {
+              $result .= ' '.$k.' = {'.$v.'},'."\n";
+          }
+        }
+        $result .= "}\n";
+        return $result;
+    }
+    throw new Exception('incorrect value of BIBTEXBROWSER_BIBTEX_VIEW: '+BIBTEXBROWSER_BIBTEX_VIEW);
   }
 
   /** Returns true if this bib entry contains the given phrase (PREG regexp)
@@ -1482,15 +1558,10 @@ class BibEntry {
    * Note that this method is NOT case sensitive */
   function hasPhrase($phrase, $field = null) {
 
-    // 2010-01-25
-    // bug found by jacob kellner
-    // we have to search in the formatted fileds and not in the raw entry
+    // we have to search in the formatted fields and not in the raw entry
     // i.e. all latex markups are not considered for searches
-    // i.e. added join(" ",$this->getFields())
-    // and html_entity_decode
     if (!$field) {
-      // warning html_entity_decode supports encoding since PHP5
-      return preg_match('/'.$phrase.'/i',$this->getConstants().' '.@html_entity_decode(join(" ",$this->getFields()),ENT_NOQUOTES,ENCODING));
+      return preg_match('/'.$phrase.'/i',$this->getConstants().' '.join(" ",$this->getFields()));
       //return stripos($this->getText(), $phrase) !== false;
     }
     if ($this->hasField($field) &&  (preg_match('/'.$phrase.'/i',$this->getField($field)) ) ) {
@@ -1639,16 +1710,25 @@ class BibEntry {
   function toEntryUnformatted() {
     $result = "";
     $result .= '<pre class="purebibtex">'; // pre is nice when it is embedded with no CSS available
-    $entry = htmlspecialchars($this->getFullText());
+    $entry = htmlspecialchars($this->getFullText(),ENT_NOQUOTES|ENT_XHTML, OUTPUT_ENCODING);
 
     // Fields that should be hyperlinks
+    // the order matters
     $hyperlinks = array('url' => '%O', 'file' => '%O', 'pdf' => '%O', 'doi' => 'http://dx.doi.org/%O', 'gsid' => 'http://scholar.google.com/scholar?cites=%O');
 
+    $vals = array();
     foreach ($hyperlinks as $field => $url) {
       if ($this->hasField($field)) {
         $href = str_replace('%O', $this->getField($field), $url);
         // this is not a parsing but a simple replacement
-        $entry = str_replace($this->getField($field), '<a'.(BIBTEXBROWSER_LINKS_IN_NEW_WINDOW?' target="_blank" ':'').' href="'.$href.'">'.$this->getField($field).'</a>', $entry);
+        $entry = str_replace($this->getField($field), '___'.$field.'___', $entry);
+        $vals[$field] = $href;
+      }
+    }
+    foreach ($vals as $field => $href) {
+      if ($this->hasField($field)) {
+        // this is not a parsing but a simple replacement
+        $entry = str_replace('___'.$field.'___', '<a'.(BIBTEXBROWSER_LINKS_IN_NEW_WINDOW?' target="_blank" ':'').' href="'.$href.'">'.$this->getField($field).'</a>', $entry);
       }
     }
 
@@ -2064,7 +2144,7 @@ function DefaultBibliographyStyle(&$bibentry) {
   // add the Coin URL
   $result .=  $bibentry->toCoins();
 
-  return '<span itemscope itemtype="http://schema.org/ScholarlyArticle">'.$result.'</span>';
+  return '<span itemscope="" itemtype="http://schema.org/ScholarlyArticle">'.$result.'</span>';
 }
 
 
@@ -2171,6 +2251,107 @@ function JanosBibliographyStyle(&$bibentry) {
 }
 
 
+/** Bibtexbrowser style producing vancouver style often used in medicine.
+ *
+ *  See: Patrias K. Citing medicine: the NLM style guide for authors, editors,
+ *  and publishers [Internet]. 2nd ed. Wendling DL, technical editor.
+ *  Bethesda (MD): National Library of Medicine (US); 2007 -
+ *  [updated 2011 Sep 15; cited 2015 April 18].
+ *  Available from: http://www.nlm.nih.gov/citingmedicine
+ *
+ * usage: Add the following lines to "bibtexbrowser.local.php"
+<pre>
+define('BIBLIOGRAPHYSTYLE','VancouverBibliographyStyle');
+define('USE_INITIALS_FOR_NAMES',true);
+</pre>
+*/
+
+function VancouverBibliographyStyle(&$bibentry) {
+  $title = $bibentry->getTitle();
+  $type = $bibentry->getType();
+
+  $entry=array();
+
+  // author
+  if ($bibentry->hasField('author')) {
+    $entry[] = $bibentry->formattedAuthors().'. ';
+  }
+
+  // Ensure punctuation mark at title's end
+  if (strpos(":.;,?!", substr(rtrim($title), -1)) > 0) {
+    $title = $title . ' ';
+  } else {
+    $title = $title . '. ';
+  }
+  if ($bibentry->hasField('url')) {
+    $title = ' <a'.(BIBTEXBROWSER_BIB_IN_NEW_WINDOW?' target="_blank" ':'').' href="'.$bibentry->getField('url').'">'.$title.'</a>';
+  }
+
+  $entry[] = $title;
+
+  $booktitle = '';
+
+  //// ******* EDITOR
+  $editor='';
+  if ($bibentry->hasField(EDITOR)) {
+    $editor = $bibentry->getFormattedEditors() . ' ';
+  }
+
+  if (($type=="misc") && $bibentry->hasField("note")) {
+    $booktitle = $editor;
+    $booktitle = $bibentry->getField("note");
+  } else if ($type=="inproceedings") {
+      $booktitle = 'In: ' . $editor . $bibentry->getField(BOOKTITLE);
+  } else if ($type=="incollection") {
+      $booktitle = 'Chapter in ';
+      if ($editor!='') $booktitle .= $editor;
+      $booktitle .= $bibentry->getField(BOOKTITLE);
+  } else if ($type=="article") {
+      $booktitle = $bibentry->getField("journal");
+  }
+  if ($booktitle!='') {
+    $entry[] = $booktitle . '. ';
+  }
+
+
+  $publisher='';
+  if ($type=="phdthesis") {
+      $publisher = 'PhD thesis, '.$bibentry->getField(SCHOOL);
+  } else if ($type=="mastersthesis") {
+      $publisher = 'Master\'s thesis, '.$bibentry->getField(SCHOOL);
+  } else if ($type=="techreport") {
+      $publisher = 'Technical report, '.$bibentry->getField("institution");
+  }
+  if ($bibentry->hasField("publisher")) {
+    $publisher = $bibentry->getField("publisher");
+  }
+  if ($publisher!='') {
+    if ($bibentry->hasField('address')) {
+      $entry[] =  $bibentry->getField("address").': ';
+    }
+    $entry[] = $publisher . "; ";
+  }
+
+
+  if ($bibentry->hasField(YEAR)) $entry[] = $bibentry->getYear();
+
+  if ($bibentry->hasField('volume')) $entry[] =  ";".$bibentry->getField("volume");
+  if ($bibentry->hasField('number')) $entry[] =  '('.$bibentry->getField("number").')';
+
+  if ($bibentry->hasField('pages')) $entry[] = str_replace("--", "-", ":".$bibentry->getField("pages"));
+
+  $result = implode($entry).'.';
+
+  // some comments (e.g. acceptance rate)?
+  if ($bibentry->hasField('comment')) {
+      $result .=  " (".$bibentry->getField("comment").")";
+  }
+
+  // add the Coin URL
+  $result .=  "\n".$bibentry->toCoins();
+
+  return $result;
+}
 
 
 
@@ -2587,7 +2768,7 @@ function query2title(&$query) {
 	}
 	$v = join($v, ',');
       }
-      $headers[$k] = __(ucwords($k)).': '.ucwords(htmlspecialchars($v));
+      $headers[$k] = __(ucwords($k)).': '.ucwords(htmlspecialchars($v,ENT_NOQUOTES|ENT_XHTML, OUTPUT_ENCODING));
   }
   return join(' &amp; ',$headers);
 }
@@ -2716,6 +2897,8 @@ class SimpleDisplay  {
   function metadata() {
     if (BIBTEXBROWSER_ROBOTS_NOINDEX) {
       return array(array('robots','noindex'));
+    } else {
+      return array();
     }
   }
 
@@ -3664,13 +3847,13 @@ function HTMLTemplate(&$content) {
 
 // when we load a page with AJAX
 // the HTTP header is taken into account, not the <meta http-equiv>
-header('Content-type: text/html; charset='.ENCODING);
+header('Content-type: text/html; charset='.OUTPUT_ENCODING);
 echo '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">'."\n";
 
 ?>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=<?php echo ENCODING ?>"/>
+<meta http-equiv="Content-Type" content="text/html; charset=<?php echo OUTPUT_ENCODING ?>"/>
 <meta name="generator" content="bibtexbrowser v__GITHUB__" />
 <?php
 // if ($content->getRSS()!='') echo '<link rel="alternate" type="application/rss+xml" title="RSS" href="'.$content->getRSS().'&amp;rss" />';
@@ -3768,10 +3951,10 @@ class BibtexDisplay {
   function setWrapper($x) { $x->wrapper = 'NoWrapper'; }
 
   function display() {
-    header('Content-type: text/plain; charset='.ENCODING);
+    header('Content-type: text/plain; charset='.OUTPUT_ENCODING);
     echo '% generated by bibtexbrowser <http://www.monperrus.net/martin/bibtexbrowser/>'."\n";
     echo '% '.@$this->title."\n";
-    echo '% Encoding: '.ENCODING."\n";
+    echo '% Encoding: '.OUTPUT_ENCODING."\n";
     foreach($this->entries as $bibentry) { echo $bibentry->getText()."\n"; }
     exit;
   }
@@ -3827,15 +4010,15 @@ class PagedDisplay {
     $more = true;
 
     // computing $more
-    $index = ($this->page)*PAGE_SIZE;
+    $index = ($this->page)*bibtexbrowser_configuration('PAGE_SIZE');
     if (!isset($this->entries[$index])) {
       $more = false;
     }
 
     $this->menu($less, $more);
     print_header_layout();
-    for ($i = 0; $i < PAGE_SIZE; $i++) {
-      $index = ($this->page-1)*PAGE_SIZE + $i;
+    for ($i = 0; $i < bibtexbrowser_configuration('PAGE_SIZE'); $i++) {
+      $index = ($this->page-1)*bibtexbrowser_configuration('PAGE_SIZE') + $i;
       if (isset($this->entries[$index])) {
         $bib = $this->entries[$index];
         echo $bib->toHTML();
@@ -3856,13 +4039,13 @@ class PagedDisplay {
 
     $prev = $this->query;
     $prev['page'] = $this->page-1;
-    if ($less == true) { echo '<a '.makeHref($prev).'">Prev Page</a>'; }
+    if ($less == true) { echo '<a '.makeHref($prev).'>Prev Page</a>'; }
 
     if ($less && $more) { echo '&nbsp;|&nbsp;'; }
 
     $next = $this->query;
     $next['page'] = $this->page+1;
-    if ($more == true) { echo '<a '.makeHref($next).'">Next Page</a>'; }
+    if ($more == true) { echo '<a '.makeHref($next).'>Next Page</a>'; }
     echo '</span>';
 
   }
@@ -3890,14 +4073,11 @@ class RSSDisplay {
   function setTitle($title) { $this->title = $title; return $this; }
 
   /** tries to always output a valid XML/RSS string
-    * based on ENCODING, HTML tags, and the transformations
+    * based on OUTPUT_ENCODING, HTML tags, and the transformations
     * that happened in latex2html */
   function text2rss($desc) {
     // first strip HTML tags
     $desc = strip_tags($desc);
-
-    // then decode characters encoded by latex2html, preserve ENCODING
-    $desc = html_entity_decode($desc, ENT_COMPAT, ENCODING);
 
     // some entities may still be here, we remove them
     // we replace html entities e.g. &eacute; by nothing
@@ -3912,8 +4092,8 @@ class RSSDisplay {
 
     // final test with encoding:
     if (function_exists('mb_check_encoding')) { // (PHP 4 >= 4.4.3, PHP 5 >= 5.1.3)
-      if (!mb_check_encoding($desc,ENCODING)) {
-        return 'encoding error: please check the content of ENCODING';
+      if (!mb_check_encoding($desc,OUTPUT_ENCODING,BIBTEX_INPUT_ENCODING)) {
+        return 'encoding error: please check the content of OUTPUT_ENCODING';
       }
     }
 
@@ -3929,7 +4109,7 @@ class RSSDisplay {
 
   function display() {
     header('Content-type: application/rss+xml');
-    echo '<?xml version="1.0" encoding="'.ENCODING.'"?>';
+    echo '<?xml version="1.0" encoding="'.OUTPUT_ENCODING.'"?>';
 //
 
 ?>
@@ -3950,7 +4130,6 @@ class RSSDisplay {
          <description>
           <?php
             // we are in XML, so we cannot have HTML entitites
-            // however the encoding is specified in preamble
             echo $this->text2rss(bib2html($bibentry)."\n".$bibentry->getAbstract());
           ?>
           </description>
@@ -4059,7 +4238,7 @@ class Dispatcher {
        //echo '<pre>';print_r($selectedEntries);echo '</pre>';
 
        if ($this->displayer=='') {
-         $this->displayer = BIBTEXBROWSER_DEFAULT_DISPLAY;
+         $this->displayer = bibtexbrowser_configuration('BIBTEXBROWSER_DEFAULT_DISPLAY');
        }
     } // otherwise the query is left empty
 
@@ -4127,7 +4306,7 @@ class Dispatcher {
   }
 
   function search() {
-    if (preg_match('/utf-?8/i',ENCODING)) {
+    if (preg_match('/utf-?8/i',OUTPUT_ENCODING)) {
       $_GET[Q_SEARCH] = urldecode($_GET[Q_SEARCH]);
     }
     $this->query[Q_SEARCH]=$_GET[Q_SEARCH];
@@ -4305,7 +4484,7 @@ class Dispatcher {
     <html  xmlns="http://www.w3.org/1999/xhtml">
     <head>
     <meta name="generator" content="bibtexbrowser v__GITHUB__" />
-    <meta http-equiv="Content-Type" content="text/html; charset=<?php echo ENCODING ?>"/>
+    <meta http-equiv="Content-Type" content="text/html; charset=<?php echo OUTPUT_ENCODING ?>"/>
     <title>You are browsing <?php echo $_GET[Q_FILE]; ?> with bibtexbrowser</title>
     </head>
     <frameset cols="15%,*">
